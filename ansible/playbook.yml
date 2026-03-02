@@ -1,0 +1,308 @@
+- name: Configure TechNova dev server and deploy app
+  hosts: web
+  become: true
+
+  vars:
+    app_dir: /opt/technova-app
+
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Install base packages
+      apt:
+        name:
+          - nginx
+          - curl
+        state: present
+
+    - name: Install Node.js 18 (NodeSource)
+      shell: |
+        curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
+        apt-get install -y nodejs
+      args:
+        creates: /usr/bin/node
+
+    - name: Create app directory
+      file:
+        path: "{{ app_dir }}"
+        state: directory
+
+    - name: Write package.json
+      copy:
+        dest: "{{ app_dir }}/package.json"
+        content: |
+          {
+            "name": "technova-app",
+            "version": "1.0.0",
+            "main": "server.js",
+            "dependencies": {
+              "express": "^4.19.2",
+              "pg": "^8.12.0"
+            }
+          }
+
+    - name: Write server.js
+      copy:
+        dest: "{{ app_dir }}/server.js"
+        content: |
+          const express = require("express");
+          const { Client } = require("pg");
+
+          const app = express();
+
+          // Parse form data
+          app.use(express.urlencoded({ extended: true }));
+          app.use(express.json());
+
+          function dbConfig() {
+            return {
+              host: process.env.DB_HOST,
+              port: process.env.DB_PORT,
+              database: process.env.DB_NAME,
+              user: process.env.DB_USER,
+              password: process.env.DB_PASS,
+              ssl: { rejectUnauthorized: false }
+            };
+          }
+
+          async function ensureTable() {
+            const client = new Client(dbConfig());
+            await client.connect();
+            await client.query(`
+              CREATE TABLE IF NOT EXISTS technova_messages (
+                id SERIAL PRIMARY KEY,
+                name TEXT NOT NULL,
+                message TEXT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+              );
+            `);
+            await client.end();
+          }
+
+          // Ensure DB table exists on startup (and keep app running even if DB is temporarily down)
+          ensureTable().catch((e) => console.error("DB init error:", e.message));
+
+          app.get("/", (req, res) => {
+            res.setHeader("Content-Type", "text/html; charset=utf-8");
+            res.send(`
+              <!doctype html>
+              <html>
+              <head>
+                <meta charset="utf-8" />
+                <meta name="viewport" content="width=device-width, initial-scale=1" />
+                <title>TechNova Feedback Wall</title>
+                <style>
+                  body { font-family: Arial, sans-serif; background:#0b1220; color:#e6eefc; margin:0; }
+                  .wrap { max-width:900px; margin:0 auto; padding:28px 16px; }
+                  .card { background:#121b2f; border:1px solid #223055; border-radius:14px; padding:18px; }
+                  h1 { margin:0 0 10px; font-size:26px; }
+                  p { margin:8px 0; color:#b8c6e6; }
+                  .row { display:flex; gap:12px; flex-wrap:wrap; }
+                  input, textarea { width:100%; padding:12px; border-radius:10px; border:1px solid #2a3b66; background:#0f1730; color:#e6eefc; }
+                  textarea { min-height:110px; resize:vertical; }
+                  .btn { display:inline-block; padding:12px 14px; border-radius:10px; border:0; cursor:pointer; background:#4f8cff; color:#06102a; font-weight:700; }
+                  .btn2 { display:inline-block; padding:10px 12px; border-radius:10px; border:1px solid #2a3b66; color:#e6eefc; text-decoration:none; }
+                  .small { font-size:12px; color:#9fb0d8; }
+                  .top { display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap; }
+                  .tag { font-size:12px; padding:6px 10px; border-radius:999px; background:#0f1730; border:1px solid #2a3b66; color:#b8c6e6; }
+                </style>
+              </head>
+              <body>
+                <div class="wrap">
+                  <div class="top">
+                    <div>
+                      <h1>TechNova Feedback Wall ✨</h1>
+                      <p>Drop a message. It saves to Postgres (RDS). Anyone can view the wall.</p>
+                    </div>
+                    <div class="tag">S3: ${process.env.S3_BUCKET || "not_set"}</div>
+                  </div>
+
+                  <div class="card">
+                    <form method="POST" action="/submit">
+                      <div class="row">
+                        <div style="flex:1; min-width:260px;">
+                          <label>Name</label>
+                          <input name="name" placeholder="e.g. Dave" required />
+                        </div>
+                      </div>
+                      <div style="margin-top:12px;">
+                        <label>Message</label>
+                        <textarea name="message" placeholder="What do you think of TechNova?" required></textarea>
+                      </div>
+                      <div style="margin-top:12px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+                        <button class="btn" type="submit">Post to Wall</button>
+                        <a class="btn2" href="/wall">View Wall</a>
+                        <span class="small">Endpoints: /health, /db, /s3</span>
+                      </div>
+                    </form>
+                  </div>
+                </div>
+              </body>
+              </html>
+            `);
+          });
+
+          app.post("/submit", async (req, res) => {
+            const name = (req.body.name || "").trim();
+            const message = (req.body.message || "").trim();
+
+            if (!name || !message) {
+              return res.status(400).send("Name and message are required.");
+            }
+
+            const client = new Client(dbConfig());
+            try {
+              await client.connect();
+              await client.query(
+                "INSERT INTO technova_messages (name, message) VALUES ($1, $2)",
+                [name, message]
+              );
+              await client.end();
+              res.redirect("/wall");
+            } catch (e) {
+              try { await client.end(); } catch {}
+              res.status(500).send("DB insert failed: " + e.message);
+            }
+          });
+
+          app.get("/wall", async (req, res) => {
+            const client = new Client(dbConfig());
+            try {
+              await client.connect();
+              const r = await client.query(
+                "SELECT id, name, message, created_at FROM technova_messages ORDER BY id DESC LIMIT 50"
+              );
+              await client.end();
+
+              const items = r.rows.map(row => `
+                <div style="background:#0f1730; border:1px solid #2a3b66; border-radius:12px; padding:12px; margin:10px 0;">
+                  <div style="display:flex; justify-content:space-between; gap:10px; flex-wrap:wrap;">
+                    <strong>${escapeHtml(row.name)}</strong>
+                    <span style="color:#9fb0d8; font-size:12px;">${new Date(row.created_at).toLocaleString()}</span>
+                  </div>
+                  <div style="margin-top:8px; color:#e6eefc;">${escapeHtml(row.message)}</div>
+                </div>
+              `).join("");
+
+              res.setHeader("Content-Type", "text/html; charset=utf-8");
+              res.send(`
+                <!doctype html>
+                <html>
+                <head>
+                  <meta charset="utf-8" />
+                  <meta name="viewport" content="width=device-width, initial-scale=1" />
+                  <title>TechNova Wall</title>
+                </head>
+                <body style="font-family:Arial,sans-serif;background:#0b1220;color:#e6eefc;margin:0;">
+                  <div style="max-width:900px;margin:0 auto;padding:28px 16px;">
+                    <h2 style="margin:0 0 10px;">Wall 🧱</h2>
+                    <p style="margin:0 0 14px;color:#b8c6e6;">Latest 50 messages stored in RDS.</p>
+                    <a href="/" style="display:inline-block;margin-bottom:14px;color:#e6eefc;">← Back</a>
+                    ${items || '<p style="color:#b8c6e6;">No messages yet. Be the first!</p>'}
+                  </div>
+                </body>
+                </html>
+              `);
+            } catch (e) {
+              try { await client.end(); } catch {}
+              res.status(500).send("DB read failed: " + e.message);
+            }
+          });
+
+          app.get("/health", (req, res) => res.json({ status: "ok" }));
+
+          app.get("/db", async (req, res) => {
+            const client = new Client(dbConfig());
+            try {
+              await client.connect();
+              const r = await client.query("SELECT NOW() as now");
+              await client.end();
+              res.json({ db: "connected", now: r.rows[0].now });
+            } catch (e) {
+              try { await client.end(); } catch {}
+              res.status(500).json({ db: "failed", error: e.message });
+            }
+          });
+
+          app.get("/s3", (req, res) => {
+            res.json({ bucket: process.env.S3_BUCKET || "not_set" });
+          });
+
+          // Basic HTML escaping for safety
+          function escapeHtml(str) {
+            return String(str)
+              .replaceAll("&", "&amp;")
+              .replaceAll("<", "&lt;")
+              .replaceAll(">", "&gt;")
+              .replaceAll('"', "&quot;")
+              .replaceAll("'", "&#039;");
+          }
+
+          app.listen(3000, "127.0.0.1", () => console.log("Listening on 3000"));
+
+    - name: Install node dependencies
+      shell: |
+        cd {{ app_dir }}
+        npm install
+      args:
+        creates: "{{ app_dir }}/node_modules"
+
+    - name: Write env file (from Terraform outputs)
+      copy:
+        dest: /etc/technova.env
+        content: |
+          DB_HOST={{ lookup('env','TF_DB_HOST') }}
+          DB_PORT={{ lookup('env','TF_DB_PORT') }}
+          DB_NAME={{ lookup('env','TF_DB_NAME') }}
+          DB_USER={{ lookup('env','TF_DB_USER') }}
+          DB_PASS={{ lookup('env','TF_DB_PASS') }}
+          S3_BUCKET={{ lookup('env','TF_S3_BUCKET') }}
+
+    - name: Create systemd service
+      copy:
+        dest: /etc/systemd/system/technova.service
+        content: |
+          [Unit]
+          Description=TechNova Node App
+          After=network.target
+
+          [Service]
+          EnvironmentFile=/etc/technova.env
+          WorkingDirectory={{ app_dir }}
+          ExecStart=/usr/bin/node {{ app_dir }}/server.js
+          Restart=always
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Reload systemd
+      systemd:
+        daemon_reload: yes
+
+    - name: Enable and restart app
+      systemd:
+        name: technova
+        enabled: yes
+        state: restarted
+
+    - name: Configure Nginx reverse proxy
+      copy:
+        dest: /etc/nginx/sites-available/default
+        content: |
+          server {
+            listen 80 default_server;
+            listen [::]:80 default_server;
+
+            location / {
+              proxy_pass http://127.0.0.1:3000;
+              proxy_set_header Host $host;
+              proxy_set_header X-Real-IP $remote_addr;
+            }
+          }
+
+    - name: Restart nginx
+      service:
+        name: nginx
+        state: restarted
