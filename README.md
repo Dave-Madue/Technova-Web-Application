@@ -1,4 +1,4 @@
-<img width="1536" height="1024" alt="Architecture Diagram" src="https://github.com/user-attachments/assets/c28e0af9-1916-47d1-8101-90e3027ada5e" /># TechNova AWS Development Environment
+# TechNova AWS Development Environment
 
 This project provisions a secure AWS development environment using Terraform and deploys a working web application using Ansible.
 
