@@ -1,4 +1,4 @@
-# TechNova AWS Development Environment
+<img width="1536" height="1024" alt="Architecture Diagram" src="https://github.com/user-attachments/assets/c28e0af9-1916-47d1-8101-90e3027ada5e" /># TechNova AWS Development Environment
 
 This project provisions a secure AWS development environment using Terraform and deploys a working web application using Ansible.
 
@@ -17,6 +17,8 @@ The infrastructure is fully automated and can be destroyed and rebuilt reliably.
 - S3 Bucket with Versioning Enabled and Public Access Blocked
 
 The database is intentionally placed in private subnets and only accessible from the EC2 security group (least-privilege design).
+<img width="1536" height="1024" alt="Architecture Diagram" src="https://github.com/user-attachments/assets/cd1ebb46-9ff0-4a64-b2b3-79b83001a9e2" />
+
 
 ---
 
@@ -48,7 +50,7 @@ terraform plan
 terraform apply -auto-approve
 ```
 
-🚀 Deploy Application (Ansible)
+## 🚀 Deploy Application (Ansible)
 cd ansible
 
 # Generate inventory
@@ -67,7 +69,8 @@ TF_S3_BUCKET=$(cd ../terraform && terraform output -raw s3_bucket_name)
 export TF_DB_HOST TF_DB_PORT TF_S3_BUCKET
 
 ansible-playbook -i inventory.ini playbook.yml
-🔐 Security Decisions
+
+## 🔐 Security Decisions
 
 RDS is not publicly accessible.
 
@@ -79,11 +82,11 @@ S3 public access is blocked.
 
 This follows least-privilege principles and production-ready networking patterns.
 
-🧹 Tear Down
+## 🧹 Tear Down
 cd terraform
 terraform destroy -auto-approve
 
-📊 Production Considerations
+## 📊 Production Considerations
 
 For production, this architecture would be upgraded with:
 
