@@ -51,7 +51,9 @@ terraform apply -auto-approve
 ```
 
 ## 🚀 Deploy Application (Ansible)
+``` bash
 cd ansible
+```
 
 # Generate inventory
 EC2_IP=$(cd ../terraform && terraform output -raw ec2_public_ip)
@@ -83,8 +85,10 @@ S3 public access is blocked.
 This follows least-privilege principles and production-ready networking patterns.
 
 ## 🧹 Tear Down
+``` bash
 cd terraform
 terraform destroy -auto-approve
+```
 
 ## 📊 Production Considerations
 
